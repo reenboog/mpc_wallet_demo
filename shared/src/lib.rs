@@ -321,6 +321,7 @@ mod math_tests {
 		run_t_of_n_test(2, 2, &[1, 2]);
 		run_t_of_n_test(3, 2, &[1, 3]);
 		run_t_of_n_test(4, 3, &[1, 2, 4]);
+		run_t_of_n_test(4, 2, &[1, 4]);
 	}
 
 	#[test]
