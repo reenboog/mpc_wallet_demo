@@ -1,3 +1,5 @@
+![Rust Build Status](https://github.com/reenboog/mpc_wallet_demo/workflows/Rust/badge.svg)
+
 ## Overview
 
 - **Server**: An Axum-based HTTP service that participates in distributed key generation (DKG) and threshold signing.  
