@@ -5,9 +5,11 @@ use http::{HeaderMap, StatusCode};
 use shared::{
 	self,
 	id::Uid,
-	mpc_math, serialize,
-	share::{self, Part, SignupReq, SignupRes},
-	tokio,
+	mpc_math,
+	salt::Salt,
+	serialize,
+	share::{self, Part, SignFinal, SignFinalRes, SignReq, SignRes, SignupReq, SignupRes},
+	tokio, Scalar,
 };
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing::{self, Level};
@@ -41,7 +43,6 @@ impl IntoResponse for Error {
 
 async fn signup(
 	extract::State(state): extract::State<State>,
-	headers: HeaderMap,
 	extract::Json(req): extract::Json<SignupReq>,
 ) -> Result<Json<SignupRes>, Error> {
 	tracing::debug!("received {:?}", req);
@@ -75,10 +76,10 @@ async fn signup(
 			id,
 		);
 
-		state
+		let acl_token = state
 			.store
-			.put(id, priv_share, group_pk)
-			.map_err(|_| Error::NotFound)?;
+			.put_share(id, priv_share, group_pk)
+			.map_err(|_| Error::AlreadyExists(id))?;
 
 		Ok(Json(SignupRes {
 			id,
@@ -87,13 +88,78 @@ async fn signup(
 				secret_share: outgoing_share.into(),
 				commitments: comms.into_iter().map(share::PolyComm::from).collect(),
 			},
+			acl_token,
 		}))
 	}
+}
+
+async fn sign_commit(
+	extract::State(state): extract::State<State>,
+	extract::Json(req): extract::Json<SignReq>,
+) -> Result<Json<SignRes>, Error> {
+	tracing::debug!("received {:?}", req);
+
+	let (priv_share, _) = state.store.get_share(&req.key_id).ok_or(Error::NotFound)?;
+	let sig_req_id = Uid::gen();
+	let nonce = mpc_math::nonces_with_params(&priv_share, &req.msg, Salt::gen().as_bytes());
+	let comm = share::NonceComm::from(nonce.clone());
+
+	// store my nonce (private) and their commitment (public)
+	// used later to combine into a signature
+	state
+		.store
+		.put_nonce(
+			sig_req_id,
+			nonce,
+			req.comm.try_into().map_err(|_| Error::BadComm)?,
+		)
+		.map_err(|_| Error::AlreadyExists(sig_req_id))?;
+
+	Ok(Json(SignRes {
+		sid: sig_req_id,
+		comm,
+	}))
+}
+
+async fn sign_final(
+	extract::State(state): extract::State<State>,
+	extract::Json(req): extract::Json<SignFinal>,
+) -> Result<Json<SignFinalRes>, Error> {
+	// lookup private share
+	let (priv_share, _) = state.store.get_share(&req.key_id).ok_or(Error::NotFound)?;
+	// load and clear stored session
+	let (nonce, client_comm) = state
+		.store
+		.take_nonce(req.sid)
+		.map_err(|_| Error::NotFound)?;
+	// rebuild my comm from stored nonce
+	let server_comm = mpc_math::NonceComm {
+		r1_pt: nonce.r1_pt,
+		r2_pt: nonce.r2_pt,
+	};
+	// recompute betas; client is always 1, server is always 2 in our scheme
+	let idcs = [1u32, 2u32];
+	let comms = vec![client_comm, server_comm];
+	let (betas, _g_comm_check) = mpc_math::binding_and_group_comm(&idcs, &comms);
+	// parse challenge
+	let c = Option::from(Scalar::from_canonical_bytes(req.c)).ok_or(Error::Protocol)?;
+	// get server’s beta; server is always 2 in our current flow
+	let beta_server = betas[1];
+	// Lagrange coefficient
+	let lam = mpc_math::lagrange_at_zero(2, &idcs);
+	// server partial
+	let z_server = mpc_math::partial_z(&nonce, beta_server, c, lam, priv_share);
+
+	Ok(Json(SignFinalRes {
+		server_partial: z_server.to_bytes(),
+	}))
 }
 
 fn router(state: State) -> axum::Router {
 	axum::Router::new()
 		.route("/signup", post(signup))
+		.route("/sign/commit", post(sign_commit))
+		.route("/sign/final", post(sign_final))
 		.layer(
 			TraceLayer::new_for_http().make_span_with(
 				DefaultMakeSpan::new()

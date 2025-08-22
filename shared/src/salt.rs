@@ -11,6 +11,10 @@ pub struct Salt {
 impl Salt {
 	pub const SIZE: usize = SALT_SIZE;
 
+	pub fn as_bytes(&self) -> &[u8] {
+		&self.bytes
+	}
+
 	pub fn gen() -> Self {
 		let mut bytes = [0u8; Self::SIZE];
 		rnd::fill_bytes(&mut bytes);

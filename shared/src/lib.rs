@@ -5,6 +5,7 @@ pub use serde_json;
 pub use tokio;
 
 pub use curve25519_dalek::scalar::Scalar;
+pub use ed25519_dalek::{Verifier, VerifyingKey};
 
 pub mod aead;
 pub mod client_api;

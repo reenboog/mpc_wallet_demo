@@ -1,7 +1,7 @@
 use crate::{
 	reqwest::Client,
 	serde::{de::DeserializeOwned, Serialize},
-	share::{SignupReq, SignupRes},
+	share::{SignFinal, SignFinalRes, SignReq, SignRes, SignupReq, SignupRes},
 };
 
 use crate::error::Error;
@@ -19,7 +19,7 @@ impl Api {
 		}
 	}
 
-	async fn post<T, B>(self, endpoint: &str, body: B) -> Result<T, Error>
+	async fn post<T, B>(&self, endpoint: &str, body: B) -> Result<T, Error>
 	where
 		T: DeserializeOwned,
 		B: Serialize,
@@ -46,7 +46,15 @@ impl Api {
 		Ok(res)
 	}
 
-	pub async fn signup(self, req: SignupReq) -> Result<SignupRes, Error> {
+	pub async fn signup(&self, req: SignupReq) -> Result<SignupRes, Error> {
 		self.post("signup", req).await
+	}
+
+	pub async fn sign_commit(&self, req: SignReq) -> Result<SignRes, Error> {
+		self.post("sign/commit", req).await
+	}
+
+	pub async fn sign_final(&self, req: SignFinal) -> Result<SignFinalRes, Error> {
+		self.post("sign/final", req).await
 	}
 }

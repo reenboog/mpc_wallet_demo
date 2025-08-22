@@ -1,7 +1,7 @@
 use curve25519_dalek::Scalar;
 use serde::{Deserialize, Serialize};
 
-use crate::{id::Uid, mpc_math};
+use crate::{id::Uid, mpc_math, salt::Salt};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SignupReq {
@@ -50,7 +50,7 @@ impl TryFrom<Share> for mpc_math::SecretShare {
 }
 
 // wraps mpc_math::PolyComm
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PolyComm {
 	bytes: [u8; mpc_math::POINT_LEN],
 }
@@ -79,25 +79,97 @@ impl TryFrom<PolyComm> for mpc_math::PolyComm {
 pub struct SignupRes {
 	pub id: Uid,
 	pub share: Part,
+	pub acl_token: Salt,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Bundle {
 	pub n: u32,
 	pub t: u32,
 	pub peer_idx: u32,
 	pub scalar: [u8; mpc_math::SCALAR_LEN],
 	pub pub_key: [u8; mpc_math::POINT_LEN],
+	// used to update/delete the share; there should a multi-layered auth scheme, but it'll do here
+	pub acl_token: Salt,
 }
 
 impl Bundle {
-	pub fn new(t: u32, n: u32, peer_idx: u32, scalar: Scalar, pk: mpc_math::GroupPubKey) -> Self {
+	pub fn new(
+		t: u32,
+		n: u32,
+		peer_idx: u32,
+		scalar: Scalar,
+		pk: mpc_math::GroupPubKey,
+		acl_token: Salt,
+	) -> Self {
 		Self {
 			n,
 			t,
 			peer_idx,
 			scalar: scalar.to_bytes(),
 			pub_key: pk.as_bytes(),
+			acl_token,
 		}
 	}
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NonceComm {
+	r1_pt: PolyComm,
+	r2_pt: PolyComm,
+}
+
+impl From<mpc_math::SigNonces> for NonceComm {
+	fn from(value: mpc_math::SigNonces) -> Self {
+		Self {
+			r1_pt: mpc_math::PolyComm(value.r1_pt).into(),
+			r2_pt: mpc_math::PolyComm(value.r2_pt).into(),
+		}
+	}
+}
+
+impl TryFrom<NonceComm> for mpc_math::NonceComm {
+	type Error = ();
+
+	fn try_from(value: NonceComm) -> Result<Self, Self::Error> {
+		Ok(Self {
+			r1_pt: mpc_math::PolyComm::try_from(value.r1_pt).map_err(|_| ())?.0,
+			r2_pt: mpc_math::PolyComm::try_from(value.r2_pt).map_err(|_| ())?.0,
+		})
+	}
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignReq {
+	pub key_id: Uid,
+	pub msg: Vec<u8>,
+	// client commitment
+	pub comm: NonceComm,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignRes {
+	// session id, used to finalize the signing
+	pub sid: Uid,
+	// server commitments
+	pub comm: NonceComm,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignFinal {
+	// session id
+	pub sid: Uid,
+	pub key_id: Uid,
+	// do I need this here?
+	// pub msg: Vec<u8>,
+	// client’s z_i
+	pub client_partial: [u8; mpc_math::SCALAR_LEN],
+	// challenge scalar bytes
+	pub c: [u8; mpc_math::SCALAR_LEN],
+	pub g_comm: [u8; mpc_math::POINT_LEN],
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignFinalRes {
+	pub server_partial: [u8; 32],
 }

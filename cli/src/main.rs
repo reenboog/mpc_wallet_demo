@@ -2,9 +2,11 @@ use argh::FromArgs;
 use shared::{
 	client_api::Api,
 	id::Uid,
-	mpc_math, password_lock, serialize,
-	share::{Bundle, Part, SignupReq, SignupRes},
-	tokio,
+	mpc_math, password_lock,
+	salt::Salt,
+	serialize,
+	share::{Bundle, NonceComm, Part, SignFinal, SignReq, SignupReq, SignupRes},
+	tokio, Scalar, Verifier, VerifyingKey,
 };
 
 use std::path::PathBuf;
@@ -22,6 +24,7 @@ pub enum Error {
 	WrongPass,
 	BadBundle,
 	NoSuchId(String),
+	BadSig,
 }
 
 #[derive(FromArgs, Debug)]
@@ -133,7 +136,7 @@ async fn init(api: Api, pass: &str) -> Result<(), Error> {
 	} else {
 		let priv_share = mpc_math::combine_shares(&[my_share, incoming_share]);
 		let group_pk = mpc_math::compute_group_pk(&[comms, server_comms]);
-		let bundle = Bundle::new(DKG_T, DKG_N, 1, priv_share, group_pk);
+		let bundle = Bundle::new(DKG_T, DKG_N, 1, priv_share, group_pk, res.acl_token);
 
 		save_bundle(&res.id, pass, bundle.clone())?;
 
@@ -146,6 +149,73 @@ async fn init(api: Api, pass: &str) -> Result<(), Error> {
 async fn sign(api: Api, pass: &str, key_id: &str, msg: &str) -> Result<(), Error> {
 	println!("signing: {msg} with {key_id}");
 
+	let key_id = Uid::from_str(key_id).map_err(|_| Error::NoSuchId(key_id.to_string()))?;
+	let bundle = load_bundle(&key_id, pass)?;
+	let scalar =
+		Option::from(Scalar::from_canonical_bytes(bundle.scalar)).ok_or(Error::Protocol {
+			ctx: "bad scalar".to_string(),
+		})?;
+	let pk = mpc_math::GroupPubKey::try_from(&bundle.pub_key).map_err(|_| Error::Protocol {
+		ctx: "bad group pk".to_string(),
+	})?;
+
+	// generate nonce and commitments
+	let nonce = mpc_math::nonces_with_params(&scalar, msg.as_bytes(), Salt::gen().as_bytes());
+	let comm = NonceComm::from(nonce.clone());
+
+	let resp = api
+		.sign_commit(SignReq {
+			key_id,
+			msg: msg.as_bytes().to_vec(),
+			comm: comm.clone(),
+		})
+		.await
+		.map_err(|_| Error::Io("api failed".to_string()))?;
+
+	// aggregate commitments; client is always 1, server is always 2 in this demo
+	let idcs = [1u32, 2u32];
+	let commits = vec![comm, resp.comm]
+		.into_iter()
+		.map(mpc_math::NonceComm::try_from)
+		.collect::<Result<Vec<_>, _>>()
+		.map_err(|_| Error::BadComm)?;
+	let (betas, g_comm) = mpc_math::binding_and_group_comm(&idcs, &commits);
+	let c = mpc_math::challenge(&g_comm, &pk, msg.as_bytes());
+
+	// client’s partial
+	let lam = mpc_math::lagrange_at_zero(1, &idcs);
+	let z_client = mpc_math::partial_z(&nonce, betas[0], c, lam, scalar);
+
+	// send to server
+	let presp = api
+		.sign_final(SignFinal {
+			sid: resp.sid,
+			key_id,
+			// msg: msg.to_string(),
+			client_partial: z_client.to_bytes(),
+			c: c.to_bytes(),
+			g_comm: g_comm.compress().to_bytes(),
+		})
+		.await
+		.map_err(|_| Error::Io("api failed".to_string()))?;
+
+	let z_server = Option::from(Scalar::from_canonical_bytes(presp.server_partial)).ok_or(
+		Error::Protocol {
+			ctx: "bad server z".to_string(),
+		},
+	)?;
+
+	let sig = mpc_math::combine_sig(g_comm, &[z_client, z_server]);
+	let vk = VerifyingKey::from_bytes(&bundle.pub_key).unwrap();
+
+	// ensure the process went as expected
+	vk.verify(msg.as_bytes(), &sig).map_err(|_| Error::BadSig)?;
+	println!(
+		"sig verified OK\n\nmsg: {}\n\nsig: {}",
+		msg,
+		serialize::to_base64(&sig.to_bytes().to_vec()).unwrap()
+	);
+
 	Ok(())
 }
 
@@ -154,7 +224,7 @@ async fn delete(api: Api, pass: &str, key_id: &str) -> Result<(), Error> {
 
 	let id = Uid::from_str(key_id).map_err(|_| Error::NoSuchId(key_id.to_string()))?;
 	// authenticate locally with a pass
-	_ = load_bundle(&id, pass)?;
+	let bundle = load_bundle(&id, pass)?;
 
 	// TODO: api delete: use id to authenticate
 

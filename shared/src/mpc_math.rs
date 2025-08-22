@@ -29,6 +29,18 @@ impl GroupPubKey {
 	}
 }
 
+impl TryFrom<&[u8; POINT_LEN]> for GroupPubKey {
+	type Error = ();
+
+	fn try_from(value: &[u8; POINT_LEN]) -> Result<Self, Self::Error> {
+		Ok(Self(
+			curve25519_dalek::edwards::CompressedEdwardsY(value.clone())
+				.decompress()
+				.ok_or(())?,
+		))
+	}
+}
+
 // signing-time commitment (safe to broadcast)
 #[derive(Clone, Copy, Debug)]
 pub struct NonceComm {
@@ -37,11 +49,12 @@ pub struct NonceComm {
 }
 
 // ephemeral signing nonces (private)
-struct SigNonces {
+#[derive(Clone)]
+pub struct SigNonces {
 	r1: Scalar,
 	r2: Scalar,
-	r1_pt: EdwardsPoint,
-	r2_pt: EdwardsPoint,
+	pub r1_pt: EdwardsPoint,
+	pub r2_pt: EdwardsPoint,
 }
 
 impl SigNonces {
@@ -99,7 +112,7 @@ pub fn dkg_gen(n: usize, t: usize) -> (Vec<PolyComm>, Vec<SecretShare>) {
 	dkg_from_coeffs(&coeffs, n)
 }
 
-fn nonces_with_params(secret_share: &Scalar, msg: &[u8], session_id: &[u8]) -> SigNonces {
+pub fn nonces_with_params(secret_share: &Scalar, msg: &[u8], session_id: &[u8]) -> SigNonces {
 	// hkdf 64 bytes from (share || msg || session_id)
 	let mut h = Sha512::new();
 
@@ -159,7 +172,7 @@ pub fn compute_group_pk(comms: &[Vec<PolyComm>]) -> GroupPubKey {
 	GroupPubKey(pk_point)
 }
 
-fn binding_and_group_comm(
+pub fn binding_and_group_comm(
 	subset_indices: &[u32],
 	commits: &[NonceComm],
 ) -> (Vec<Scalar>, EdwardsPoint) {
@@ -196,7 +209,7 @@ fn binding_and_group_comm(
 	(betas, g_comm)
 }
 
-fn lagrange_at_zero(i: u32, signer_idcs: &[u32]) -> Scalar {
+pub fn lagrange_at_zero(i: u32, signer_idcs: &[u32]) -> Scalar {
 	let ii = Scalar::from(i as u64);
 	let mut num = Scalar::ONE;
 	let mut den = Scalar::ONE;
@@ -211,7 +224,7 @@ fn lagrange_at_zero(i: u32, signer_idcs: &[u32]) -> Scalar {
 	den.invert() * num
 }
 
-fn challenge(g_comm: &EdwardsPoint, pk: &GroupPubKey, msg: &[u8]) -> Scalar {
+pub fn challenge(g_comm: &EdwardsPoint, pk: &GroupPubKey, msg: &[u8]) -> Scalar {
 	let mut h = Sha512::new();
 
 	h.update(g_comm.compress().as_bytes());
@@ -221,11 +234,17 @@ fn challenge(g_comm: &EdwardsPoint, pk: &GroupPubKey, msg: &[u8]) -> Scalar {
 	Scalar::from_hash(h)
 }
 
-fn partial_z(nonces: &SigNonces, beta: Scalar, c: Scalar, lambda: Scalar, x_i: Scalar) -> Scalar {
+pub fn partial_z(
+	nonces: &SigNonces,
+	beta: Scalar,
+	c: Scalar,
+	lambda: Scalar,
+	x_i: Scalar,
+) -> Scalar {
 	sign_share(x_i, lambda, nonces.r1, nonces.r2, beta, c)
 }
 
-fn combine_sig(g_comm: EdwardsPoint, partials: &[Scalar]) -> Signature {
+pub fn combine_sig(g_comm: EdwardsPoint, partials: &[Scalar]) -> Signature {
 	let s: Scalar = partials.iter().copied().sum();
 	let mut sig = [0u8; SIG_LEN];
 
