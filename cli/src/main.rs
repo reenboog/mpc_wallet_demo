@@ -1,10 +1,14 @@
 use argh::FromArgs;
 use shared::{
 	client_api::Api,
+	id::Uid,
 	mpc_math, password_lock, serialize,
 	share::{Bundle, Part, SignupReq, SignupRes},
 	tokio,
 };
+
+use std::path::PathBuf;
+use std::{fs, str::FromStr};
 
 const DKG_T: u32 = 2;
 const DKG_N: u32 = 2;
@@ -15,6 +19,9 @@ pub enum Error {
 	BadShare,
 	BadComm,
 	Protocol { ctx: String },
+	WrongPass,
+	BadBundle,
+	NoSuchId(String),
 }
 
 #[derive(FromArgs, Debug)]
@@ -126,18 +133,9 @@ async fn init(api: Api, pass: &str) -> Result<(), Error> {
 	} else {
 		let priv_share = mpc_math::combine_shares(&[my_share, incoming_share]);
 		let group_pk = mpc_math::compute_group_pk(&[comms, server_comms]);
-
 		let bundle = Bundle::new(DKG_T, DKG_N, 1, priv_share, group_pk);
-		let lock = password_lock::lock(&bundle, pass).unwrap();
 
-		//
-
-		use std::fs;
-		use std::path::PathBuf;
-
-		let filename = format!("{}", res.id.to_string());
-		fs::write(&filename, &serialize::to_vec(&lock).unwrap())
-			.map_err(|e| Error::Io(e.to_string()))?;
+		save_bundle(&res.id, pass, bundle.clone())?;
 
 		println!("generated key id {}", res.id);
 
@@ -154,5 +152,35 @@ async fn sign(api: Api, pass: &str, key_id: &str, msg: &str) -> Result<(), Error
 async fn delete(api: Api, pass: &str, key_id: &str) -> Result<(), Error> {
 	println!("deleting {key_id}");
 
+	let id = Uid::from_str(key_id).map_err(|_| Error::NoSuchId(key_id.to_string()))?;
+	// authenticate locally with a pass
+	_ = load_bundle(&id, pass)?;
+
+	// TODO: api delete: use id to authenticate
+
+	delete_bundle(&id)?;
+
 	Ok(())
+}
+
+fn save_bundle(id: &Uid, pass: &str, bundle: Bundle) -> Result<(), Error> {
+	let lock = password_lock::lock(&bundle, pass).unwrap();
+	let filename = format!("{}", id.to_string());
+
+	fs::write(&filename, &serialize::to_vec(&lock).unwrap())
+		.map_err(|e| Error::Io(e.to_string()))?;
+
+	Ok(())
+}
+
+fn load_bundle(id: &Uid, pass: &str) -> Result<Bundle, Error> {
+	let loaded = fs::read(&id.to_string()).map_err(|e| Error::Io(e.to_string()))?;
+	let lock = serialize::from_slice(&loaded).map_err(|_| Error::BadBundle)?;
+	let restored = password_lock::unlock(&lock, pass).map_err(|_| Error::WrongPass)?;
+
+	Ok(serialize::from_slice(&restored).map_err(|_| Error::BadBundle)?)
+}
+
+fn delete_bundle(id: &Uid) -> Result<(), Error> {
+	fs::remove_file(&id.to_string()).map_err(|e| Error::Io(e.to_string()))
 }

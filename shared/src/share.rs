@@ -81,7 +81,7 @@ pub struct SignupRes {
 	pub share: Part,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct Bundle {
 	pub n: u32,
 	pub t: u32,

@@ -10,6 +10,7 @@ pub enum Error {
 	NotFound(Uid),
 }
 
+// this should be asynchronous for prod, of course
 pub struct Store {
 	// dashmap is used to avoid locking for independent requests
 	shares: DashMap<Uid, (Scalar, GroupPubKey)>,
