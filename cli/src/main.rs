@@ -1,13 +1,20 @@
 use argh::FromArgs;
 use shared::{
-	auth::{SignupReq, SignupRes},
-	tokio,
+	api::Api,
+	auth::{Part, SignupReq, SignupRes},
+	mpc_math, serialize, tokio,
 };
 
-use crate::{api::Api, error::Error};
+const DKG_T: usize = 2;
+const DKG_N: usize = 2;
 
-mod api;
-mod error;
+#[derive(Debug)]
+pub enum Error {
+	Io(String),
+	BadShare,
+	BadComm,
+	Protocol { ctx: String },
+}
 
 #[derive(FromArgs, Debug)]
 /// wallet cli
@@ -79,14 +86,53 @@ async fn main() -> Result<(), Error> {
 }
 
 async fn init(api: Api, pass: &str) -> Result<(), Error> {
-	println!("init {pass}");
+	let (comms, mut shares) = mpc_math::dkg_gen(DKG_N, DKG_T);
+	let outgoing_share = shares.pop().ok_or(Error::Protocol {
+		ctx: "no share to send found".to_string(),
+	})?;
 
-	// example call you already had
-	let res: SignupRes = api.signup(SignupReq { id: pass.into() }).await?;
+	// the client always assings himself and index of 1 for the purpose of this demo
+	let res: SignupRes = api
+		.signup(SignupReq {
+			t: DKG_T as u32,
+			n: DKG_N as u32,
+			// client -> server
+			share: Part {
+				sender_idx: 1,
+				secret_share: outgoing_share.into(),
+				commitments: comms.clone().into_iter().map(|c| c.into()).collect(),
+			},
+		})
+		.await
+		.map_err(|_| Error::Io("api failed".to_string()))?;
 
-	println!("rcvd: {:?}", res);
+	let my_share = shares.pop().ok_or(Error::Protocol {
+		ctx: "no local share found".to_string(),
+	})?;
 
-	Ok(())
+	let incoming_share =
+		mpc_math::SecretShare::try_from(res.share.secret_share).map_err(|_| Error::BadShare)?;
+	let server_comms = res
+		.share
+		.commitments
+		.into_iter()
+		.map(mpc_math::PolyComm::try_from)
+		.collect::<Result<Vec<_>, _>>()
+		.map_err(|_| Error::BadComm)?;
+
+	if !mpc_math::verify_share(&incoming_share, &server_comms) {
+		Err(Error::BadShare)
+	} else {
+		let priv_share = mpc_math::combine_shares(&[my_share, incoming_share]);
+		let group_pk = mpc_math::compute_group_pk(&[comms, server_comms]);
+
+		println!(
+			"key generated with id: {}",
+			res.id,
+		);
+
+		Ok(())
+	}
 }
 
 async fn sign(api: Api, pass: &str, key_id: &str, msg: &str) -> Result<(), Error> {

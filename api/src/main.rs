@@ -1,11 +1,12 @@
 use std::net::SocketAddr;
 
-use axum::{Json, extract, response::IntoResponse, routing::post};
+use axum::{extract, response::IntoResponse, routing::post, Json};
 use http::{HeaderMap, StatusCode};
 use shared::{
 	self,
-	auth::{SignupReq, SignupRes},
-	tokio,
+	auth::{self, Part, SignupReq, SignupRes},
+	id::Uid,
+	mpc_math, serialize, tokio,
 };
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing::{self, Level};
@@ -14,15 +15,24 @@ use tracing_subscriber::{self, layer::SubscriberExt, util::SubscriberInitExt};
 use crate::state::State;
 
 mod state;
+mod store;
 
 enum Error {
 	NotFound,
+	AlreadyExists(Uid),
+	BadShare,
+	BadComm,
+	Protocol,
 }
 
 impl IntoResponse for Error {
 	fn into_response(self) -> axum::response::Response {
 		match self {
-			Error::NotFound => (StatusCode::NOT_FOUND, ""),
+			Error::NotFound => (StatusCode::NOT_FOUND, "not found"),
+			Error::AlreadyExists(id) => (StatusCode::CONFLICT, "share already exists"),
+			Error::BadShare => (StatusCode::BAD_REQUEST, "bad share"),
+			Error::BadComm => (StatusCode::BAD_REQUEST, "bad commitment"),
+			Error::Protocol => (StatusCode::INTERNAL_SERVER_ERROR, "mpc protocol failed"),
 		}
 		.into_response()
 	}
@@ -33,9 +43,51 @@ async fn signup(
 	headers: HeaderMap,
 	extract::Json(req): extract::Json<SignupReq>,
 ) -> Result<Json<SignupRes>, Error> {
-	tracing::debug!("received {}", req.id);
+	tracing::debug!("received {:?}", req);
 
-	Ok(Json(SignupRes { id: req.id }))
+	let incoming_share =
+		mpc_math::SecretShare::try_from(req.share.secret_share).map_err(|_| Error::BadShare)?;
+	let client_comms = req
+		.share
+		.commitments
+		.into_iter()
+		.map(mpc_math::PolyComm::try_from)
+		.collect::<Result<Vec<_>, _>>()
+		.map_err(|_| Error::BadComm)?;
+
+	if !mpc_math::verify_share(&incoming_share, &client_comms) {
+		Err(Error::BadComm)
+	} else {
+		let (comms, mut shares) = mpc_math::dkg_gen(req.n as usize, req.t as usize);
+		// server's share is 2
+		let my_share = shares.pop().ok_or(Error::Protocol)?;
+		// client share is 1
+		let outgoing_share = shares.pop().ok_or(Error::Protocol)?;
+		let priv_share = mpc_math::combine_shares(&[my_share, incoming_share]);
+		let group_pk = mpc_math::compute_group_pk(&[client_comms, comms.clone()]);
+		let id = Uid::gen();
+
+		tracing::info!(
+			"my share: {}\npublic key: {}\nid: {}",
+			serialize::to_base64(priv_share.as_bytes()).unwrap(),
+			serialize::to_base64(group_pk.0.compress().as_bytes()).unwrap(),
+			id,
+		);
+
+		state
+			.store
+			.put(id, priv_share, group_pk)
+			.map_err(|_| Error::NotFound)?;
+
+		Ok(Json(SignupRes {
+			id,
+			share: Part {
+				sender_idx: 2,
+				secret_share: outgoing_share.into(),
+				commitments: comms.into_iter().map(auth::PolyComm::from).collect(),
+			},
+		}))
+	}
 }
 
 fn router(state: State) -> axum::Router {
@@ -64,7 +116,7 @@ async fn main() {
 		.init();
 	tracing::info!("starting {}...", crate_name);
 
-	let state = State {};
+	let state = State::new(store::Store::new());
 	let router = router(state);
 	let port = 8081;
 	let addr = SocketAddr::from(([0, 0, 0, 0], port));

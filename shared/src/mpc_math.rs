@@ -5,6 +5,10 @@ use ed25519_dalek::Signature;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha512};
 
+pub const SCALAR_LEN: usize = 32;
+pub const POINT_LEN: usize = 32;
+pub const SIG_LEN: usize = 64;
+
 // public dkg commitment to a polynomial coefficient (safe to broadcast)
 #[derive(Clone, Debug)]
 pub struct PolyComm(pub EdwardsPoint);
@@ -18,6 +22,12 @@ pub struct SecretShare {
 
 #[derive(Clone)]
 pub struct GroupPubKey(pub EdwardsPoint);
+
+impl GroupPubKey {
+	pub fn as_bytes(&self) -> [u8; POINT_LEN] {
+		self.0.compress().as_bytes().clone()
+	}
+}
 
 // signing-time commitment (safe to broadcast)
 #[derive(Clone, Copy, Debug)]
@@ -217,7 +227,7 @@ fn partial_z(nonces: &SigNonces, beta: Scalar, c: Scalar, lambda: Scalar, x_i: S
 
 fn combine_sig(g_comm: EdwardsPoint, partials: &[Scalar]) -> Signature {
 	let s: Scalar = partials.iter().copied().sum();
-	let mut sig = [0u8; 64];
+	let mut sig = [0u8; SIG_LEN];
 
 	sig[..32].copy_from_slice(&g_comm.compress().to_bytes());
 	sig[32..].copy_from_slice(s.as_bytes());
@@ -453,12 +463,14 @@ mod math_tests {
 
 #[cfg(test)]
 mod vector_tests {
-	use curve25519_dalek::{EdwardsPoint, Scalar, edwards::CompressedEdwardsY, traits::Identity};
+	use curve25519_dalek::{edwards::CompressedEdwardsY, traits::Identity, EdwardsPoint, Scalar};
 	use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 	use hex::FromHex;
 	use serde::Deserialize;
 
-	use super::{GroupPubKey, challenge, combine_sig, lagrange_at_zero, sign_share};
+	use crate::mpc_math::{POINT_LEN, SCALAR_LEN, SIG_LEN};
+
+	use super::{challenge, combine_sig, lagrange_at_zero, sign_share, GroupPubKey};
 
 	#[derive(Deserialize)]
 	struct ParticipantShare {
@@ -509,12 +521,12 @@ mod vector_tests {
 	}
 
 	fn scalar_from_hex(s: &str) -> Scalar {
-		let bytes = <[u8; 32]>::from_hex(s).unwrap();
+		let bytes = <[u8; SCALAR_LEN]>::from_hex(s).unwrap();
 		Scalar::from_bytes_mod_order(bytes)
 	}
 
 	fn point_from_hex(s: &str) -> EdwardsPoint {
-		let bytes = <[u8; 32]>::from_hex(s).unwrap();
+		let bytes = <[u8; POINT_LEN]>::from_hex(s).unwrap();
 
 		CompressedEdwardsY(bytes).decompress().unwrap()
 	}
@@ -524,13 +536,13 @@ mod vector_tests {
 		let data = std::fs::read_to_string("frost_vec.json").unwrap();
 		let v: FrostVector = serde_json::from_str(&data).unwrap();
 
-		let group_pk_bytes = <[u8; 32]>::from_hex(&v.inputs.verifying_key_key).unwrap();
+		let group_pk_bytes = <[u8; POINT_LEN]>::from_hex(&v.inputs.verifying_key_key).unwrap();
 		let vk = VerifyingKey::from_bytes(&group_pk_bytes).unwrap();
 		let pk = GroupPubKey(point_from_hex(&v.inputs.verifying_key_key));
 
 		let msg = <Vec<u8>>::from_hex(&v.inputs.message).unwrap();
 
-		let sig_bytes = <[u8; 64]>::from_hex(&v.final_output.sig).unwrap();
+		let sig_bytes = <[u8; SIG_LEN]>::from_hex(&v.final_output.sig).unwrap();
 		let sig = Signature::from_bytes(&sig_bytes);
 
 		// recompute R (aggregated nonce commitment)
