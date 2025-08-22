@@ -9,7 +9,6 @@ use shared::{
 	tokio, Scalar, Verifier, VerifyingKey,
 };
 
-use std::path::PathBuf;
 use std::{fs, str::FromStr};
 
 const DKG_T: u32 = 2;
@@ -25,6 +24,7 @@ pub enum Error {
 	BadBundle,
 	NoSuchId(String),
 	BadSig,
+	Unauthorized,
 }
 
 #[derive(FromArgs, Debug)]
@@ -83,13 +83,13 @@ async fn main() -> Result<(), Error> {
 
 	match &args.mode {
 		Mode::Init(_) => {
-			init(api, &args.pass).await;
+			_ = init(api, &args.pass).await;
 		}
 		Mode::Sign(Sign { key, message }) => {
-			sign(api, &args.pass, &key, &message).await;
+			_ = sign(api, &args.pass, &key, &message).await;
 		}
 		Mode::Delete(Delete { key }) => {
-			delete(api, &args.pass, key).await;
+			_ = delete(api, &args.pass, key).await;
 		}
 	}
 
@@ -140,15 +140,13 @@ async fn init(api: Api, pass: &str) -> Result<(), Error> {
 
 		save_bundle(&res.id, pass, bundle.clone())?;
 
-		println!("generated key id {}", res.id);
+		println!("generated key:\n{}", res.id);
 
 		Ok(())
 	}
 }
 
 async fn sign(api: Api, pass: &str, key_id: &str, msg: &str) -> Result<(), Error> {
-	println!("signing: {msg} with {key_id}");
-
 	let key_id = Uid::from_str(key_id).map_err(|_| Error::NoSuchId(key_id.to_string()))?;
 	let bundle = load_bundle(&key_id, pass)?;
 	let scalar =
@@ -211,7 +209,7 @@ async fn sign(api: Api, pass: &str, key_id: &str, msg: &str) -> Result<(), Error
 	// ensure the process went as expected
 	vk.verify(msg.as_bytes(), &sig).map_err(|_| Error::BadSig)?;
 	println!(
-		"sig verified OK\n\nmsg: {}\n\nsig: {}",
+		"sig verified OK\n\nmsg:\n{}\n\nsig:\n{}",
 		msg,
 		serialize::to_base64(&sig.to_bytes().to_vec()).unwrap()
 	);
@@ -220,24 +218,26 @@ async fn sign(api: Api, pass: &str, key_id: &str, msg: &str) -> Result<(), Error
 }
 
 async fn delete(api: Api, pass: &str, key_id: &str) -> Result<(), Error> {
-	println!("deleting {key_id}");
-
 	let id = Uid::from_str(key_id).map_err(|_| Error::NoSuchId(key_id.to_string()))?;
 	// authenticate locally with a pass
 	let bundle = load_bundle(&id, pass)?;
 
-	// TODO: api delete: use id to authenticate
+	// and with a teoken remotely
+	api.delete_share(&id, &bundle.acl_token)
+		.await
+		.map_err(|_| Error::Unauthorized)?;
 
 	delete_bundle(&id)?;
+
+	println!("deleted key:\n{key_id}");
 
 	Ok(())
 }
 
 fn save_bundle(id: &Uid, pass: &str, bundle: Bundle) -> Result<(), Error> {
 	let lock = password_lock::lock(&bundle, pass).unwrap();
-	let filename = format!("{}", id.to_string());
 
-	fs::write(&filename, &serialize::to_vec(&lock).unwrap())
+	fs::write(&id.to_string(), &serialize::to_vec(&lock).unwrap())
 		.map_err(|e| Error::Io(e.to_string()))?;
 
 	Ok(())

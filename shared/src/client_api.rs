@@ -1,4 +1,7 @@
+use http::header;
+
 use crate::{
+	id::Uid,
 	reqwest::Client,
 	serde::{de::DeserializeOwned, Serialize},
 	share::{SignFinal, SignFinalRes, SignReq, SignRes, SignupReq, SignupRes},
@@ -44,6 +47,36 @@ impl Api {
 			.map_err(|e| Error::Io(e.to_string()))?;
 
 		Ok(res)
+	}
+
+	async fn delete<T>(&self, endpoint: &str, token: &str) -> Result<T, Error>
+	where
+		T: DeserializeOwned,
+	{
+		let url = format!(
+			"{}/{}",
+			self.host.trim_end_matches('/'),
+			endpoint.trim_start_matches('/')
+		);
+
+		let res = self
+			.client
+			.delete(url)
+			.header(header::AUTHORIZATION, token)
+			.send()
+			.await
+			.map_err(|e| Error::Io(e.to_string()))?
+			.error_for_status()
+			.map_err(|e| Error::Io(e.to_string()))?
+			.json::<T>()
+			.await
+			.map_err(|e| Error::Io(e.to_string()))?;
+
+		Ok(res)
+	}
+
+	pub async fn delete_share(&self, id: &Uid, acl_token: &str) -> Result<(), Error> {
+		self.delete(&format!("delete/{}", id), acl_token).await
 	}
 
 	pub async fn signup(&self, req: SignupReq) -> Result<SignupRes, Error> {

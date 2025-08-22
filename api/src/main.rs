@@ -1,13 +1,17 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, str::FromStr};
 
-use axum::{extract, response::IntoResponse, routing::post, Json};
-use http::{HeaderMap, StatusCode};
+use axum::{
+	extract::{self, Path},
+	response::IntoResponse,
+	routing::{delete, post},
+	Json,
+};
+use http::{header, HeaderMap, StatusCode};
 use shared::{
 	self,
 	id::Uid,
 	mpc_math,
 	salt::Salt,
-	serialize,
 	share::{self, Part, SignFinal, SignFinalRes, SignReq, SignRes, SignupReq, SignupRes},
 	tokio, Scalar,
 };
@@ -26,16 +30,18 @@ enum Error {
 	BadShare,
 	BadComm,
 	Protocol,
+	Unauthorized,
 }
 
 impl IntoResponse for Error {
 	fn into_response(self) -> axum::response::Response {
 		match self {
 			Error::NotFound => (StatusCode::NOT_FOUND, "not found"),
-			Error::AlreadyExists(id) => (StatusCode::CONFLICT, "share already exists"),
+			Error::AlreadyExists(_) => (StatusCode::CONFLICT, "share already exists"),
 			Error::BadShare => (StatusCode::BAD_REQUEST, "bad share"),
 			Error::BadComm => (StatusCode::BAD_REQUEST, "bad commitment"),
 			Error::Protocol => (StatusCode::INTERNAL_SERVER_ERROR, "mpc protocol failed"),
+			Error::Unauthorized => (StatusCode::UNAUTHORIZED, "no acl token provided"),
 		}
 		.into_response()
 	}
@@ -68,14 +74,6 @@ async fn signup(
 		let priv_share = mpc_math::combine_shares(&[my_share, incoming_share]);
 		let group_pk = mpc_math::compute_group_pk(&[client_comms, comms.clone()]);
 		let id = Uid::gen();
-
-		tracing::info!(
-			"my share: {}\npublic key: {}\nid: {}",
-			serialize::to_base64(priv_share.as_bytes()).unwrap(),
-			serialize::to_base64(group_pk.0.compress().as_bytes()).unwrap(),
-			id,
-		);
-
 		let acl_token = state
 			.store
 			.put_share(id, priv_share, group_pk)
@@ -125,6 +123,8 @@ async fn sign_final(
 	extract::State(state): extract::State<State>,
 	extract::Json(req): extract::Json<SignFinal>,
 ) -> Result<Json<SignFinalRes>, Error> {
+	tracing::debug!("received {:?}", req);
+
 	// lookup private share
 	let (priv_share, _) = state.store.get_share(&req.key_id).ok_or(Error::NotFound)?;
 	// load and clear stored session
@@ -155,11 +155,35 @@ async fn sign_final(
 	}))
 }
 
+async fn delete_share(
+	extract::State(state): extract::State<State>,
+	Path(key_id): Path<String>,
+	headers: HeaderMap,
+) -> Result<Json<()>, Error> {
+	tracing::info!("deleting {:?}", key_id);
+
+	let key_id = Uid::from_str(&key_id).map_err(|_| Error::NotFound)?;
+
+	if let Some(value) = headers.get(header::AUTHORIZATION) {
+		let token = value.to_str().map_err(|_| Error::Unauthorized)?;
+
+		state
+			.store
+			.remove_share(key_id, token)
+			.map_err(|_| Error::NotFound)?;
+
+		Ok(Json(()))
+	} else {
+		Err(Error::Unauthorized)
+	}
+}
+
 fn router(state: State) -> axum::Router {
 	axum::Router::new()
 		.route("/signup", post(signup))
 		.route("/sign/commit", post(sign_commit))
 		.route("/sign/final", post(sign_final))
+		.route("/delete/{key_id}", delete(delete_share))
 		.layer(
 			TraceLayer::new_for_http().make_span_with(
 				DefaultMakeSpan::new()

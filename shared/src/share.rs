@@ -79,7 +79,7 @@ impl TryFrom<PolyComm> for mpc_math::PolyComm {
 pub struct SignupRes {
 	pub id: Uid,
 	pub share: Part,
-	pub acl_token: Salt,
+	pub acl_token: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -90,7 +90,7 @@ pub struct Bundle {
 	pub scalar: [u8; mpc_math::SCALAR_LEN],
 	pub pub_key: [u8; mpc_math::POINT_LEN],
 	// used to update/delete the share; there should a multi-layered auth scheme, but it'll do here
-	pub acl_token: Salt,
+	pub acl_token: String,
 }
 
 impl Bundle {
@@ -100,7 +100,7 @@ impl Bundle {
 		peer_idx: u32,
 		scalar: Scalar,
 		pk: mpc_math::GroupPubKey,
-		acl_token: Salt,
+		acl_token: String,
 	) -> Self {
 		Self {
 			n,

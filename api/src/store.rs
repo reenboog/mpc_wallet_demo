@@ -3,7 +3,7 @@ use shared::{
 	id::Uid,
 	mpc_math::{self, GroupPubKey},
 	salt::Salt,
-	Scalar,
+	serialize, Scalar,
 };
 
 pub enum Error {
@@ -14,7 +14,7 @@ pub enum Error {
 // this should be asynchronous for prod, of course
 pub struct Store {
 	// dashmap is used to avoid locking for independent requests
-	shares: DashMap<Uid, (Scalar, GroupPubKey, Salt)>,
+	shares: DashMap<Uid, (Scalar, GroupPubKey, String)>,
 	// my nonce, their comm
 	nonces: DashMap<Uid, (mpc_math::SigNonces, mpc_math::NonceComm)>,
 }
@@ -53,18 +53,18 @@ impl Store {
 			.ok_or(Error::NotFound(sid))?)
 	}
 
-	pub fn put_share(&self, id: Uid, share: Scalar, pk: GroupPubKey) -> Result<Salt, Error> {
+	pub fn put_share(&self, id: Uid, share: Scalar, pk: GroupPubKey) -> Result<String, Error> {
 		if self.shares.contains_key(&id) {
 			Err(Error::AlreadyExists(id))
 		} else {
-			let token = Salt::gen();
+			let token = serialize::to_base64(&Salt::gen()).unwrap();
 			self.shares.insert(id, (share, pk, token.clone()));
 
 			Ok(token)
 		}
 	}
 
-	pub fn remove_share(&self, id: Uid, acl_token: &Salt) -> Result<(), Error> {
+	pub fn remove_share(&self, id: Uid, acl_token: &str) -> Result<(), Error> {
 		// do not leak any information, whether the token was correct or not – just "not found" instead
 		_ = self
 			.shares
