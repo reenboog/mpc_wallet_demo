@@ -1,3 +1,4 @@
+use curve25519_dalek::Scalar;
 use serde::{Deserialize, Serialize};
 
 use crate::{id::Uid, mpc_math};
@@ -78,4 +79,25 @@ impl TryFrom<PolyComm> for mpc_math::PolyComm {
 pub struct SignupRes {
 	pub id: Uid,
 	pub share: Part,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Bundle {
+	pub n: u32,
+	pub t: u32,
+	pub peer_idx: u32,
+	pub scalar: [u8; mpc_math::SCALAR_LEN],
+	pub pub_key: [u8; mpc_math::POINT_LEN],
+}
+
+impl Bundle {
+	pub fn new(t: u32, n: u32, peer_idx: u32, scalar: Scalar, pk: mpc_math::GroupPubKey) -> Self {
+		Self {
+			n,
+			t,
+			peer_idx,
+			scalar: scalar.to_bytes(),
+			pub_key: pk.as_bytes(),
+		}
+	}
 }

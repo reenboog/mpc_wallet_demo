@@ -4,9 +4,10 @@ use axum::{extract, response::IntoResponse, routing::post, Json};
 use http::{HeaderMap, StatusCode};
 use shared::{
 	self,
-	auth::{self, Part, SignupReq, SignupRes},
 	id::Uid,
-	mpc_math, serialize, tokio,
+	mpc_math, serialize,
+	share::{self, Part, SignupReq, SignupRes},
+	tokio,
 };
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing::{self, Level};
@@ -84,7 +85,7 @@ async fn signup(
 			share: Part {
 				sender_idx: 2,
 				secret_share: outgoing_share.into(),
-				commitments: comms.into_iter().map(auth::PolyComm::from).collect(),
+				commitments: comms.into_iter().map(share::PolyComm::from).collect(),
 			},
 		}))
 	}

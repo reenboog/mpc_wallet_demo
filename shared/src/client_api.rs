@@ -1,7 +1,7 @@
 use crate::{
-	auth::{SignupReq, SignupRes},
 	reqwest::Client,
 	serde::{de::DeserializeOwned, Serialize},
+	share::{SignupReq, SignupRes},
 };
 
 use crate::error::Error;

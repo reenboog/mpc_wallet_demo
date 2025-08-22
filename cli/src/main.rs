@@ -1,12 +1,13 @@
 use argh::FromArgs;
 use shared::{
-	api::Api,
-	auth::{Part, SignupReq, SignupRes},
-	mpc_math, serialize, tokio,
+	client_api::Api,
+	mpc_math, password_lock, serialize,
+	share::{Bundle, Part, SignupReq, SignupRes},
+	tokio,
 };
 
-const DKG_T: usize = 2;
-const DKG_N: usize = 2;
+const DKG_T: u32 = 2;
+const DKG_N: u32 = 2;
 
 #[derive(Debug)]
 pub enum Error {
@@ -86,7 +87,7 @@ async fn main() -> Result<(), Error> {
 }
 
 async fn init(api: Api, pass: &str) -> Result<(), Error> {
-	let (comms, mut shares) = mpc_math::dkg_gen(DKG_N, DKG_T);
+	let (comms, mut shares) = mpc_math::dkg_gen(DKG_N as usize, DKG_T as usize);
 	let outgoing_share = shares.pop().ok_or(Error::Protocol {
 		ctx: "no share to send found".to_string(),
 	})?;
@@ -94,8 +95,8 @@ async fn init(api: Api, pass: &str) -> Result<(), Error> {
 	// the client always assings himself and index of 1 for the purpose of this demo
 	let res: SignupRes = api
 		.signup(SignupReq {
-			t: DKG_T as u32,
-			n: DKG_N as u32,
+			t: DKG_T,
+			n: DKG_N,
 			// client -> server
 			share: Part {
 				sender_idx: 1,
@@ -126,10 +127,19 @@ async fn init(api: Api, pass: &str) -> Result<(), Error> {
 		let priv_share = mpc_math::combine_shares(&[my_share, incoming_share]);
 		let group_pk = mpc_math::compute_group_pk(&[comms, server_comms]);
 
-		println!(
-			"key generated with id: {}",
-			res.id,
-		);
+		let bundle = Bundle::new(DKG_T, DKG_N, 1, priv_share, group_pk);
+		let lock = password_lock::lock(&bundle, pass).unwrap();
+
+		//
+
+		use std::fs;
+		use std::path::PathBuf;
+
+		let filename = format!("{}", res.id.to_string());
+		fs::write(&filename, &serialize::to_vec(&lock).unwrap())
+			.map_err(|e| Error::Io(e.to_string()))?;
+
+		println!("generated key id {}", res.id);
 
 		Ok(())
 	}
